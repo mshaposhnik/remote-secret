@@ -19,6 +19,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
 	"time"
 
 	api "github.com/redhat-appstudio/remote-secret/api/v1beta1"
@@ -39,6 +40,7 @@ const (
 )
 
 var (
+	ConnectionError                                   = errors.New("error connecting to the API URL specified in the remote secret target")
 	noAuthServiceAccountFound                         = errors.New("No service account labeled with '" + api.RemoteSecretAuthServiceAccountLabel + "' was found that could be used to authenticate deployments to targets in the local cluster")
 	onlyOneAuthServiceAccountPerNamespaceAllowed      = errors.New("there can be only one service account labeled with '" + api.RemoteSecretAuthServiceAccountLabel + "' in a namespace")
 	noKubeConfigSpecifiedForConnectionToRemoteCluster = errors.New("a secret with kubeconfig with credentials for connecting to a remote cluster is required")
@@ -157,6 +159,13 @@ func (cf *CachingClientFactory) GetClient(ctx context.Context, currentNamespace 
 		cfg, ttl, err := configGetter.GetRestConfig(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("failed to construct REST configuration for the kubernetes client to deploy to a target: %w", err)
+		}
+
+		// check REST config is ok
+		httpCl, _ := rest.HTTPClientFor(cfg)
+		_, err = apiutil.NewDiscoveryRESTMapper(cfg, httpCl)
+		if err != nil {
+			return nil, ConnectionError
 		}
 
 		scheme := runtime.NewScheme()

@@ -15,6 +15,8 @@
 package rerror
 
 import (
+	"errors"
+	"github.com/redhat-appstudio/remote-secret/controllers/bindings"
 	"strings"
 )
 
@@ -70,4 +72,16 @@ func (ae *AggregatedError) Error() string {
 
 func (ae *AggregatedError) HasErrors() bool {
 	return len(ae.errors) > 0
+}
+
+func (ae *AggregatedError) ExcludeConnectionErrs() *AggregatedError {
+	all := ae.errors
+	filtered := make([]error, 0, len(all))
+	for _, err := range all {
+		if errors.As(err, &bindings.ConnectionError) {
+			continue
+		}
+		filtered = append(filtered, err)
+	}
+	return NewAggregatedError(filtered...)
 }

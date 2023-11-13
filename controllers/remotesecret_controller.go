@@ -336,16 +336,24 @@ func (r *RemoteSecretReconciler) deploy(ctx context.Context, remoteSecret *api.R
 	aerr := &rerror.AggregatedError{}
 	r.processTargets(ctx, remoteSecret, data, aerr)
 
-	var deploymentStatus metav1.ConditionStatus
-	var deploymentReason api.RemoteSecretReason
+	// Assume everything is ok, will change if we find any errors
+	var deploymentStatus = metav1.ConditionTrue
+	var deploymentReason = api.RemoteSecretReasonInjected
 	var deploymentMessage string
 
 	if aerr.HasErrors() {
-		log.FromContext(ctx).Error(aerr, "failed to deploy the secret to some targets")
-
 		deploymentReason = api.RemoteSecretReasonPartiallyInjected
 		deploymentStatus = metav1.ConditionFalse
 		deploymentMessage = aerr.Error()
+	}
+
+	//filer out non-critical errors
+	aerr = aerr.ExcludeConnectionErrs()
+
+	if aerr.HasErrors() {
+		// still have critical errors, so we want to retry the reconciliation
+		log.FromContext(ctx).Error(aerr, "failed to deploy the secret to some targets")
+
 		// we want to retry the reconciliation because we failed to deploy to some targets in a retryable way
 		result.Cancellation.Cancel = true
 		result.Cancellation.ReturnError = aerr
@@ -363,9 +371,6 @@ func (r *RemoteSecretReconciler) deploy(ctx context.Context, remoteSecret *api.R
 			deploymentReason = api.RemoteSecretReasonPartiallyInjected
 			deploymentStatus = metav1.ConditionFalse
 			deploymentMessage = "some targets were not successfully deployed"
-		} else {
-			deploymentReason = api.RemoteSecretReasonInjected
-			deploymentStatus = metav1.ConditionTrue
 		}
 	}
 
@@ -452,7 +457,11 @@ func (r *RemoteSecretReconciler) deployToNamespace(ctx context.Context, remoteSe
 
 	depHandler, depErr := newDependentsHandler(ctx, r.TargetClientFactory, r.RemoteSecretStorage, remoteSecret, targetSpec, targetStatus)
 	if depErr != nil {
-		debugLog.Error(depErr, "failed to construct the dependents handler")
+		if stdErrors.As(depErr, &bindings.ConnectionError) {
+			debugLog.Info("failed to construct the dependents handler", "error", depErr)
+		} else {
+			debugLog.Error(depErr, "failed to construct the dependents handler")
+		}
 	}
 
 	var checkPoint bindings.CheckPoint
@@ -536,6 +545,9 @@ func (r *RemoteSecretReconciler) deployToNamespace(ctx context.Context, remoteSe
 func (r *RemoteSecretReconciler) deleteFromNamespace(ctx context.Context, remoteSecret *api.RemoteSecret, statusTargetIndex remotesecrets.StatusTargetIndex) error {
 	dep, err := newDependentsHandler(ctx, r.TargetClientFactory, r.RemoteSecretStorage, remoteSecret, nil, &remoteSecret.Status.Targets[statusTargetIndex])
 	if err != nil {
+		if stdErrors.As(err, &bindings.ConnectionError) {
+			log.FromContext(ctx).V(logs.DebugLevel).Info("failed to construct the dependents handler", "error", err)
+		}
 		return fmt.Errorf("failed to construct the handler to use for target cleanup: %w", err)
 	}
 
